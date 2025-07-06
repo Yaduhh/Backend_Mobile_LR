@@ -5,11 +5,11 @@ const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'sistem_mki',
+  database: process.env.DB_NAME || 'sistem_lautan_rejeki',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  timezone: '+07:00' // Set timezone ke WIB (Asia/Jakarta)
+  timezone: '+07:00'
 });
 
 module.exports = pool;

@@ -12,6 +12,7 @@ const adminKunjunganRoutes = require('./src/routes/adminKunjunganRoutes');
 const adminClientRoutes = require('./src/routes/adminClientRoutes');
 const adminArsipFileRoutes = require('./src/routes/adminArsipFileRoutes');
 const adminEventRoutes = require('./src/routes/adminEventRoutes');
+const penawaranRoutes = require('./src/routes/penawaranRoutes');
 
 const app = express();
 
@@ -44,6 +45,7 @@ app.use('/api/admin/kunjungan', adminKunjunganRoutes);
 app.use('/api/admin/clients', adminClientRoutes);
 app.use('/api/admin/arsip-files', adminArsipFileRoutes);
 app.use('/api/admin/events', adminEventRoutes);
+app.use('/api/penawaran', penawaranRoutes);
 
 // Error handling
 app.use((err, req, res, next) => {
