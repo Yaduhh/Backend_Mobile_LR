@@ -11,6 +11,7 @@ const arsipFileRoutes = require('./routes/arsipFileRoutes');
 const adminClientRoutes = require('./routes/adminClientRoutes');
 const adminArsipFileRoutes = require('./routes/adminArsipFileRoutes');
 const penawaranRoutes = require('./routes/penawaranRoutes');
+const purchaseOrderRoutes = require('./routes/purchaseOrderRoutes');
 
 const app = express();
 
@@ -42,6 +43,7 @@ app.use('/api/admin/clients', adminClientRoutes);
 app.use('/api/admin/events', eventRoutes);
 app.use('/api/admin/arsip-files', adminArsipFileRoutes);
 app.use('/api/penawaran', penawaranRoutes);
+app.use('/api/purchase-order', purchaseOrderRoutes);
 
 // Error handling
 app.use((err, req, res, next) => {

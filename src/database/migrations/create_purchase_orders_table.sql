@@ -1,0 +1,35 @@
+-- Create purchase_orders table
+CREATE TABLE IF NOT EXISTS purchase_orders (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  id_penawaran INT NOT NULL,
+  nomor_po VARCHAR(50) NOT NULL UNIQUE,
+  tanggal_po DATETIME NOT NULL,
+  gudang_utama INT NOT NULL,
+  status_po ENUM('draft', 'approved', 'in_production', 'completed', 'cancelled') DEFAULT 'draft',
+  prioritas ENUM('low', 'medium', 'high', 'urgent') DEFAULT 'medium',
+  catatan TEXT,
+  target_selesai DATE,
+  approved_by INT,
+  approved_at DATETIME,
+  cancelled_by INT,
+  cancelled_at DATETIME,
+  created_by INT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  status_deleted TINYINT(1) DEFAULT 0,
+  
+  INDEX idx_penawaran (id_penawaran),
+  INDEX idx_status (status_po),
+  INDEX idx_prioritas (prioritas),
+  INDEX idx_created_by (created_by),
+  INDEX idx_approved_by (approved_by),
+  INDEX idx_cancelled_by (cancelled_by),
+  INDEX idx_gudang (gudang_utama),
+  INDEX idx_deleted (status_deleted),
+  
+  FOREIGN KEY (id_penawaran) REFERENCES penawaran(id) ON DELETE CASCADE,
+  FOREIGN KEY (gudang_utama) REFERENCES gudang(id) ON DELETE RESTRICT,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT,
+  FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL,
+  FOREIGN KEY (cancelled_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci; 
