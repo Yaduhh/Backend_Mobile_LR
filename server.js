@@ -28,6 +28,10 @@ app.use('/upload/dokumentasi', express.static(require('path').join(process.cwd()
 app.use('/upload/arsip_files', express.static(require('path').join(process.cwd(), 'upload/arsip_files/')));
 // Serve profile images statically
 app.use('/upload/profiles', express.static(require('path').join(process.cwd(), 'upload/profiles/')));
+// Serve kop surat logos statically
+app.use('/upload/kop-surat-logos', express.static(require('path').join(process.cwd(), 'upload/kop-surat-logos/')));
+// Serve tanda tangan statically
+app.use('/upload/tanda-tangan', express.static(require('path').join(process.cwd(), 'upload/tanda-tangan/')));
 
 // Routes
 app.get('/', (req, res) => {

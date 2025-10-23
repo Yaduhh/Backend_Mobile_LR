@@ -1,5 +1,19 @@
 const db = require('../config/database');
 
+// Helper function to query category products (outside class)
+// isPipa: true untuk Pipa (field: diameter), false untuk Fitting (field: size)
+async function queryCategoryProducts(kategoriTable, produkTable, isPipa = true) {
+  const sizeField = isPipa ? 'diameter' : 'size';
+  const [results] = await db.execute(
+    `SELECT k.id as kategori_id, k.nama_kategori as kategori_nama, 
+            p.id, p.nama_produk as nama, p.${sizeField} as mm, p.${sizeField} as dn, p.harga as price, p.satuan 
+     FROM ${kategoriTable} k 
+     LEFT JOIN ${produkTable} p ON k.id = p.kategori_id 
+     ORDER BY k.nama_kategori, p.${sizeField}`
+  );
+  return results;
+}
+
 class PenawaranController {
   // Get all penawaran for sales
   async index(req, res) {
@@ -98,11 +112,17 @@ class PenawaranController {
       const userId = req.user.id;
       
       const query = `
-        SELECT p.*, c.nama as client_nama, c.nama_perusahaan as client_perusahaan,
-               u.name as user_name
+        SELECT p.*, 
+               c.nama as client_nama, c.nama_perusahaan as client_perusahaan,
+               u.name as user_name,
+               k.title_header as kop_surat_title, k.alamat as kop_surat_alamat,
+               k.notelp as kop_surat_notelp, k.fax as kop_surat_fax,
+               k.email as kop_surat_email, k.logo as kop_surat_logo,
+               (SELECT file_ttd FROM user_tanda_tangan WHERE user_id = u.id AND kop_surat_id = p.kop_surat_id AND status_aktif = 1 AND status_deleted = 0 LIMIT 1) as user_ttd
         FROM penawaran p
         LEFT JOIN clients c ON p.id_client = c.id
         LEFT JOIN users u ON p.id_user = u.id
+        LEFT JOIN kop_surat k ON p.kop_surat_id = k.id
         WHERE p.id = ? AND p.id_user = ? AND p.status_deleted = 0
       `;
       
@@ -122,6 +142,24 @@ class PenawaranController {
         penawaran.syarat_kondisi = JSON.parse(penawaran.syarat_kondisi);
       }
       
+      // Build kop_surat object
+      penawaran.kop_surat = {
+        title_header: penawaran.kop_surat_title,
+        alamat: penawaran.kop_surat_alamat,
+        notelp: penawaran.kop_surat_notelp,
+        fax: penawaran.kop_surat_fax,
+        email: penawaran.kop_surat_email,
+        logo: penawaran.kop_surat_logo
+      };
+      
+      // Remove redundant fields
+      delete penawaran.kop_surat_title;
+      delete penawaran.kop_surat_alamat;
+      delete penawaran.kop_surat_notelp;
+      delete penawaran.kop_surat_fax;
+      delete penawaran.kop_surat_email;
+      delete penawaran.kop_surat_logo;
+      
       res.json({ success: true, data: penawaran });
     } catch (error) {
       console.error('Error in penawaran show:', error);
@@ -135,11 +173,13 @@ class PenawaranController {
       const userId = req.user.id;
       const {
         id_client,
-        id_gudang,
         kop_surat_id,
         project,
         judul_penawaran,
         tanggal_penawaran,
+        status_ppn,
+        status_diskon_produk,
+        diskon_cetak,
         diskon,
         diskon_satu,
         diskon_dua,
@@ -147,8 +187,28 @@ class PenawaranController {
         total,
         json_produk,
         syarat_kondisi,
-        catatan
+        catatan,
+        masa_berlaku_minggu,
+        waktu_delivery_hari,
+        pembayaran_tempo_hari,
+        syarat_tempo,
+        tempo_hari,
+        syarat_cbd,
+        syarat_dp,
+        dp_persen
       } = req.body;
+      
+      // Get kop surat untuk format_surat, nomor_bank, title_header
+      const [kopSurat] = await db.execute(
+        'SELECT format_surat, nomor_bank, title_header FROM kop_surat WHERE id = ?',
+        [kop_surat_id]
+      );
+      
+      if (!kopSurat || kopSurat.length === 0) {
+        return res.status(400).json({ success: false, message: 'Kop surat tidak ditemukan' });
+      }
+      
+      const formatSurat = kopSurat[0].format_surat || 'LRL';
       
       // Generate nomor penawaran
       const month = new Date().getMonth() + 1;
@@ -161,7 +221,7 @@ class PenawaranController {
       
       const romanMonth = romanMonths[month];
       
-      // Get last penawaran number for this month
+      // Get last penawaran number for this month (termasuk yang deleted)
       const [lastPenawaran] = await db.execute(
         'SELECT nomor_penawaran FROM penawaran WHERE kop_surat_id = ? AND YEAR(created_at) = ? AND MONTH(created_at) = ? ORDER BY id DESC LIMIT 1',
         [kop_surat_id, new Date().getFullYear(), month]
@@ -173,8 +233,58 @@ class PenawaranController {
         nextNumber = lastNumber + 1;
       }
       
-      const nomorUrut = nextNumber < 10 ? `0${nextNumber}` : nextNumber.toString();
-      const nomor_penawaran = `${nomorUrut}/${romanMonth}/SP-LRL/${year}`;
+      // Format nomor urut: 2 digit untuk < 10, 3 digit untuk >= 10 (SAMA KAYAK WEB)
+      let nomorUrut;
+      if (nextNumber < 10) {
+        nomorUrut = nextNumber.toString().padStart(2, '0');
+      } else {
+        nomorUrut = nextNumber.toString().padStart(3, '0');
+      }
+      
+      const nomor_penawaran = `${nomorUrut}/${romanMonth}/SP-${formatSurat}/${year}`;
+      
+      // Process syarat_kondisi - Tambah custom syarat (SAMA KAYAK WEB)
+      let processedSyaratKondisi = [];
+      
+      // 1. Masa berlaku penawaran
+      if (masa_berlaku_minggu) {
+        processedSyaratKondisi.push(`Masa berlaku penawaran ${masa_berlaku_minggu} minggu`);
+      }
+      
+      // 2. Waktu delivery
+      if (waktu_delivery_hari) {
+        processedSyaratKondisi.push(`Waktu delivery ${waktu_delivery_hari} hari dari PO diterima`);
+      }
+      
+      // 3. Pembayaran tempo (dengan nomor rekening dari kop surat)
+      if (pembayaran_tempo_hari) {
+        const nomorRekening = kopSurat[0].nomor_bank || 'BCA 549 528 7979';
+        const namaPerusahaan = kopSurat[0].title_header || 'PT LAUTAN REJEKI LUAS';
+        processedSyaratKondisi.push(`Pembayaran tempo ${pembayaran_tempo_hari} hari dari invoice ${nomorRekening} a/n. ${namaPerusahaan}`);
+      }
+      
+      // 4. Process syarat dari checkbox/database
+      if (syarat_kondisi && Array.isArray(syarat_kondisi)) {
+        syarat_kondisi.forEach(syarat => {
+          // Skip kalau value nya boolean field names
+          if (typeof syarat === 'string') {
+            processedSyaratKondisi.push(syarat);
+          }
+        });
+      }
+      
+      // 5. Tambah syarat khusus dari boolean flags
+      if (syarat_tempo && tempo_hari) {
+        processedSyaratKondisi.push(`Tempo ${tempo_hari} Hari`);
+      }
+      
+      if (syarat_cbd) {
+        processedSyaratKondisi.push('CBD (Cash Before Delivery)');
+      }
+      
+      if (syarat_dp && dp_persen) {
+        // Calculate DP amount (will be calculated after grand_total)
+      }
       
       // Calculate totals
       const subtotal = parseFloat(total) || 0;
@@ -191,6 +301,13 @@ class PenawaranController {
       const ppn_nominal = after_diskon * (ppnPercent / 100);
       const grand_total = Math.round(after_diskon + ppn_nominal);
       
+      // Add DP syarat if applicable (after grand_total calculated)
+      if (syarat_dp && dp_persen) {
+        const dpNominal = (grand_total * dp_persen) / 100;
+        const dpFormatted = 'Rp ' + new Intl.NumberFormat('id-ID').format(dpNominal);
+        processedSyaratKondisi.push(`DP ${dp_persen}% Dan sisanya dibayarkan setelah barang dikirim. Total DP ${dpFormatted}`);
+      }
+      
       // Get current time with +7 hours (WIB)
       const now = new Date();
       now.setHours(now.getHours() + 7);
@@ -200,20 +317,24 @@ class PenawaranController {
       
       const insertQuery = `
         INSERT INTO penawaran (
-          id_user, id_client, id_gudang, kop_surat_id, project, nomor_penawaran,
-          tanggal_penawaran, judul_penawaran, diskon, diskon_satu, diskon_dua,
-          ppn, total, total_diskon, total_diskon_1, total_diskon_2, grand_total,
-          json_produk, syarat_kondisi, catatan, status, status_deleted, created_by,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+          id_user, id_client, kop_surat_id, project, nomor_penawaran,
+          tanggal_penawaran, judul_penawaran, 
+          status_ppn, status_diskon_produk, diskon_cetak,
+          diskon, diskon_satu, diskon_dua, ppn, 
+          total, total_diskon, total_diskon_1, total_diskon_2, grand_total,
+          json_produk, syarat_kondisi, catatan, 
+          status, status_deleted, created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
       `;
       
       const insertParams = [
-        userId, id_client, id_gudang, kop_surat_id, project, nomor_penawaran,
-        tanggal_penawaran, judul_penawaran, diskonPercent, diskonSatuPercent, diskonDuaPercent,
-        ppnPercent, subtotal, total_diskon, total_diskon_1, total_diskon_2, grand_total,
-        JSON.stringify(json_produk || []), JSON.stringify(syarat_kondisi || []), catatan, userId,
-        currentTime, currentTime
+        userId, id_client, kop_surat_id, project, nomor_penawaran,
+        tanggal_penawaran, judul_penawaran,
+        status_ppn || false, status_diskon_produk || false, diskon_cetak || false,
+        diskonPercent, diskonSatuPercent, diskonDuaPercent, ppnPercent,
+        subtotal, total_diskon, total_diskon_1, total_diskon_2, grand_total,
+        JSON.stringify(json_produk || {}), JSON.stringify(processedSyaratKondisi), catatan,
+        userId, currentTime, currentTime
       ];
       
       console.log('Insert params:', insertParams);
@@ -448,7 +569,7 @@ class PenawaranController {
   async getKopSurat(req, res) {
     try {
       const [kopSurat] = await db.execute(
-        'SELECT id, title_header, alamat, notelp, fax, email, format_surat FROM kop_surat WHERE status_deleted = 0 ORDER BY title_header'
+        'SELECT id, title_header, alamat, notelp, fax, email, format_surat, nomor_bank FROM kop_surat WHERE status_deleted = 0 ORDER BY title_header'
       );
       res.json({ success: true, data: kopSurat });
     } catch (error) {
@@ -456,6 +577,333 @@ class PenawaranController {
       res.status(500).json({ success: false, message: 'Internal server error' });
     }
   }
+
+  // Get ALL Product Categories at once (optimized untuk mobile)
+  async getAllProductCategories(req, res) {
+    try {
+      const categories = {};
+      
+      // BLACK HDPE
+      const blackHdpePipa = await queryCategoryProducts('black_hdpe_pipa_kategoris', 'black_hdpe_pipa_produks', true);
+      const blackHdpeFitting = await queryCategoryProducts('black_hdpe_fitting_kategoris', 'black_hdpe_fitting_produks', false);
+      
+      // EXOPLAS
+      const exoplasPipa = await queryCategoryProducts('exoplas_kategoris', 'exoplas_produks', true);
+      const exoplasFitting = await queryCategoryProducts('exoplas_fitting_kategoris', 'exoplas_fitting_produks', false);
+      
+      // KELOX
+      const keloxPipa = await queryCategoryProducts('kelox_pipa_kategoris', 'kelox_pipa_produks', true);
+      const keloxFitting = await queryCategoryProducts('kelox_fitting_kategoris', 'kelox_fitting_produks', false);
+      
+      // LITE
+      const litePipa = await queryCategoryProducts('lite_pipa_kategoris', 'lite_pipa_produks', true);
+      const liteFitting = await queryCategoryProducts('lite_fitting_kategoris', 'lite_fitting_produks', false);
+      
+      // SAFE & LOK
+      const safelokPipa = await queryCategoryProducts('safelok_pipa_kategoris', 'safelok_pipa_produks', true);
+      const safelokFitting = await queryCategoryProducts('safelok_fitting_kategoris', 'safelok_fitting_produks', false);
+      
+      // ONDA
+      const ondaPipa = await queryCategoryProducts('onda_pipa_kategoris', 'onda_pipa_produks', true);
+      const ondaFitting = await queryCategoryProducts('onda_fitting_kategoris', 'onda_fitting_produks', false);
+      
+      // PPR
+      const pprPipa = await queryCategoryProducts('ppr_pipa_kategoris', 'ppr_pipa_produks', true);
+      const pprFitting = await queryCategoryProducts('ppr_fitting_kategoris', 'ppr_fitting_produks', false);
+      
+      // PIPA STANDARD
+      const pipaStandardPipa = await queryCategoryProducts('pipa_standard_kategoris', 'pipa_standard_produks', true);
+      const pipaStandardFitting = await queryCategoryProducts('pipa_standard_fitting_kategoris', 'pipa_standard_fitting_produks', false);
+
+      // Group products by kategori
+      const groupByKategori = (products) => {
+        const grouped = {};
+        products.forEach(product => {
+          if (!product.id) return; // Skip if no product (only kategori)
+          const kategoriKey = `${product.kategori_id}_${product.kategori_nama}`;
+          if (!grouped[kategoriKey]) {
+            grouped[kategoriKey] = {
+              kategori_id: product.kategori_id,
+              kategori_nama: product.kategori_nama,
+              products: []
+            };
+          }
+          grouped[kategoriKey].products.push({
+            id: product.id,
+            nama: product.nama,
+            mm: product.mm,
+            dn: product.dn,
+            price: product.price,
+            satuan: product.satuan
+          });
+        });
+        return Object.values(grouped);
+      };
+
+      categories.black_hdpe_pipa = groupByKategori(blackHdpePipa);
+      categories.black_hdpe_fitting = groupByKategori(blackHdpeFitting);
+      categories.exoplas_pipa = groupByKategori(exoplasPipa);
+      categories.exoplas_fitting = groupByKategori(exoplasFitting);
+      categories.kelox_pipa = groupByKategori(keloxPipa);
+      categories.kelox_fitting = groupByKategori(keloxFitting);
+      categories.lite_pipa = groupByKategori(litePipa);
+      categories.lite_fitting = groupByKategori(liteFitting);
+      categories.safelok_pipa = groupByKategori(safelokPipa);
+      categories.safelok_fitting = groupByKategori(safelokFitting);
+      categories.onda_pipa = groupByKategori(ondaPipa);
+      categories.onda_fitting = groupByKategori(ondaFitting);
+      categories.ppr_pipa = groupByKategori(pprPipa);
+      categories.ppr_fitting = groupByKategori(pprFitting);
+      categories.pipa_standard_pipa = groupByKategori(pipaStandardPipa);
+      categories.pipa_standard_fitting = groupByKategori(pipaStandardFitting);
+
+      res.json({ success: true, data: categories });
+    } catch (error) {
+      console.error('Error in getAllProductCategories:', error);
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  // Individual getters (untuk backward compatibility & lazy loading)
+  async getBlackHdpePipa(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM black_hdpe_pipa_kategoris k 
+         LEFT JOIN black_hdpe_pipa_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getBlackHdpeFitting(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM black_hdpe_fitting_kategoris k 
+         LEFT JOIN black_hdpe_fitting_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getExoplasPipa(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM exoplas_kategoris k 
+         LEFT JOIN exoplas_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getExoplasFitting(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM exoplas_fitting_kategoris k 
+         LEFT JOIN exoplas_fitting_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getKeloxPipa(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM kelox_pipa_kategoris k 
+         LEFT JOIN kelox_pipa_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getKeloxFitting(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM kelox_fitting_kategoris k 
+         LEFT JOIN kelox_fitting_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getLitePipa(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM lite_pipa_kategoris k 
+         LEFT JOIN lite_pipa_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getLiteFitting(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM lite_fitting_kategoris k 
+         LEFT JOIN lite_fitting_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getSafelokPipa(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM safe_lok_pipa_kategoris k 
+         LEFT JOIN safe_lok_pipa_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getSafelokFitting(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM safe_lok_fitting_kategoris k 
+         LEFT JOIN safe_lok_fitting_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getOndaPipa(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM onda_pipa_kategoris k 
+         LEFT JOIN onda_pipa_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getOndaFitting(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM onda_fitting_kategoris k 
+         LEFT JOIN onda_fitting_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getPprPipa(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM ppr_pipa_kategoris k 
+         LEFT JOIN ppr_pipa_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getPprFitting(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM ppr_fitting_kategoris k 
+         LEFT JOIN ppr_fitting_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getPipaStandardPipa(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM pipa_standard_kategoris k 
+         LEFT JOIN pipa_standard_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async getPipaStandardFitting(req, res) {
+    try {
+      const [products] = await db.execute(
+        `SELECT k.id as kategori_id, k.nama as kategori_nama, p.id, p.nama, p.slug, p.mm, p.dn, p.price, p.satuan 
+         FROM pipa_standard_fitting_kategoris k 
+         LEFT JOIN pipa_standard_fitting_produks p ON k.id = p.kategori_id 
+         WHERE k.status_deleted = 0 AND (p.status_deleted = 0 OR p.status_deleted IS NULL)
+         ORDER BY k.nama, p.mm, p.dn`
+      );
+      res.json({ success: true, data: products });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
 }
 
-module.exports = new PenawaranController(); 
+module.exports = new PenawaranController();
