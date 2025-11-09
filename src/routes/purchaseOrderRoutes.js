@@ -1,48 +1,53 @@
 const express = require('express');
 const router = express.Router();
-const PurchaseOrderController = require('../controllers/purchaseOrderController');
+const purchaseOrderController = require('../controllers/purchaseOrderController');
 const { auth } = require('../middleware/auth');
+const multer = require('multer');
+const path = require('path');
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadDir = path.join(process.cwd(), 'upload/purchase-input-files/');
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, `${uniqueSuffix}_${file.originalname}`);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
+  fileFilter: function (req, file, cb) {
+    const allowedTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'image/jpeg', 'image/jpg', 'image/png'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('File type not allowed'));
+    }
+  }
+});
 
 // Apply auth middleware to all routes
 router.use(auth);
 
-// Create Purchase Order
-router.post('/', PurchaseOrderController.create);
+// Purchase Order routes
+router.get('/', purchaseOrderController.index);
+router.get('/:id', purchaseOrderController.show);
+router.post('/', upload.array('purchase_files[]', 10), purchaseOrderController.store);
+router.put('/:id', purchaseOrderController.update);
+router.delete('/:id', purchaseOrderController.destroy);
 
-// Get Purchase Order Stats
-router.get('/stats', PurchaseOrderController.getStats);
+// Purchase Order action routes
+router.post('/:id/approve', purchaseOrderController.approve);
+router.post('/:id/start-production', purchaseOrderController.startProduction);
+router.post('/:id/complete-production', purchaseOrderController.completeProduction);
+router.post('/:id/cancel', purchaseOrderController.cancel);
+router.post('/:id/reactivate', purchaseOrderController.reactivate);
 
-// Get Purchase Orders (with filters)
-router.get('/', PurchaseOrderController.index);
+// File routes
+router.delete('/file/:fileId', purchaseOrderController.deleteFile);
 
-// Get Purchase Order by ID
-router.get('/:id', PurchaseOrderController.show);
-
-// Update Purchase Order
-router.put('/:id', PurchaseOrderController.update);
-
-// Delete Purchase Order
-router.delete('/:id', PurchaseOrderController.destroy);
-
-// Approve Purchase Order
-router.post('/:id/approve', PurchaseOrderController.approve);
-
-// Start Production
-router.post('/:id/start-production', PurchaseOrderController.startProduction);
-
-// Complete Production
-router.post('/:id/complete-production', PurchaseOrderController.completeProduction);
-
-// Cancel Purchase Order
-router.post('/:id/cancel', PurchaseOrderController.cancel);
-
-// Reactivate Purchase Order
-router.post('/:id/reactivate', PurchaseOrderController.reactivate);
-
-// Get PO Items
-router.get('/:id/items', PurchaseOrderController.getItems);
-
-// Update PO Item Status
-router.put('/:id/items/:itemId/status', PurchaseOrderController.updateItemStatus);
-
-module.exports = router; 
+module.exports = router;

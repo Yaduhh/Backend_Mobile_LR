@@ -32,6 +32,8 @@ app.use('/upload/profiles', express.static(require('path').join(process.cwd(), '
 app.use('/upload/kop-surat-logos', express.static(require('path').join(process.cwd(), 'upload/kop-surat-logos/')));
 // Serve tanda tangan statically
 app.use('/upload/tanda-tangan', express.static(require('path').join(process.cwd(), 'upload/tanda-tangan/')));
+// Serve purchase input files statically
+app.use('/upload/purchase-input-files', express.static(require('path').join(process.cwd(), 'upload/purchase-input-files/')));
 
 // Routes
 app.get('/', (req, res) => {

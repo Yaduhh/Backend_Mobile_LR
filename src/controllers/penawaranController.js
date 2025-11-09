@@ -114,7 +114,9 @@ class PenawaranController {
       const query = `
         SELECT p.*, 
                c.nama as client_nama, c.nama_perusahaan as client_perusahaan,
+               c.alamat as alamat_client, c.notelp as no_telp_client, c.email as email_client,
                u.name as user_name,
+               g.nama as gudang_nama,
                k.title_header as kop_surat_title, k.alamat as kop_surat_alamat,
                k.notelp as kop_surat_notelp, k.fax as kop_surat_fax,
                k.email as kop_surat_email, k.logo as kop_surat_logo,
@@ -122,6 +124,7 @@ class PenawaranController {
         FROM penawaran p
         LEFT JOIN clients c ON p.id_client = c.id
         LEFT JOIN users u ON p.id_user = u.id
+        LEFT JOIN gudang g ON p.id_gudang = g.id
         LEFT JOIN kop_surat k ON p.kop_surat_id = k.id
         WHERE p.id = ? AND p.id_user = ? AND p.status_deleted = 0
       `;
@@ -160,6 +163,51 @@ class PenawaranController {
       delete penawaran.kop_surat_email;
       delete penawaran.kop_surat_logo;
       
+      // Convert TINYINT (1/0) to boolean for checkboxes
+      penawaran.status_ppn = penawaran.status_ppn === 1 ? true : false;
+      penawaran.status_diskon_produk = penawaran.status_diskon_produk === 1 ? true : false;
+      penawaran.diskon_cetak = penawaran.diskon_cetak === 1 ? true : false;
+      
+      // Get Purchase Order data if exists
+      const [poData] = await db.execute(`
+        SELECT po.*, g.nama as gudang_nama
+        FROM purchase_orders po
+        LEFT JOIN gudang g ON po.gudang_utama = g.id
+        WHERE po.id_penawaran = ? AND po.status_deleted = 0
+      `, [id]);
+      
+      if (poData.length > 0) {
+        const po = poData[0];
+        
+        // Get Surat Jalan data for this PO
+        const [suratJalanData] = await db.execute(`
+          SELECT sj.*
+          FROM surat_jalan sj
+          WHERE sj.purchase_order_id = ? AND sj.deleted_status = 0
+          ORDER BY sj.created_at DESC
+        `, [po.id]);
+        
+        penawaran.purchase_order = {
+          id: po.id,
+          nomor_po: po.nomor_po,
+          tanggal_po: po.tanggal_po,
+          status_po: po.status_po,
+          prioritas: po.prioritas,
+          catatan: po.catatan,
+          target_selesai: po.target_selesai,
+          gudang_nama: po.gudang_nama,
+          created_at: po.created_at,
+          updated_at: po.updated_at,
+          surat_jalan: suratJalanData
+        };
+      }
+      
+      console.log('Response checkboxes:', {
+        status_ppn: penawaran.status_ppn,
+        status_diskon_produk: penawaran.status_diskon_produk,
+        diskon_cetak: penawaran.diskon_cetak
+      });
+      
       res.json({ success: true, data: penawaran });
     } catch (error) {
       console.error('Error in penawaran show:', error);
@@ -197,6 +245,10 @@ class PenawaranController {
         syarat_dp,
         dp_persen
       } = req.body;
+      
+      // Debug json_produk yang diterima
+      console.log('🔍 Received json_produk:', JSON.stringify(json_produk, null, 2));
+      console.log('🔍 Type of json_produk:', typeof json_produk);
       
       // Get kop surat untuk format_surat, nomor_bank, title_header
       const [kopSurat] = await db.execute(
@@ -327,10 +379,33 @@ class PenawaranController {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
       `;
       
+      // Debug checkbox values
+      console.log('Checkbox values received:', {
+        status_ppn,
+        status_diskon_produk,
+        diskon_cetak,
+        types: {
+          status_ppn: typeof status_ppn,
+          status_diskon_produk: typeof status_diskon_produk,
+          diskon_cetak: typeof diskon_cetak
+        }
+      });
+      
+      // Convert to TINYINT (1/0) - handle both boolean and truthy values
+      const statusPpnValue = status_ppn === true || status_ppn === 1 || status_ppn === '1' ? 1 : 0;
+      const statusDiskonProdukValue = status_diskon_produk === true || status_diskon_produk === 1 || status_diskon_produk === '1' ? 1 : 0;
+      const diskonCetakValue = diskon_cetak === true || diskon_cetak === 1 || diskon_cetak === '1' ? 1 : 0;
+      
+      console.log('Converted to DB values:', {
+        statusPpnValue,
+        statusDiskonProdukValue,
+        diskonCetakValue
+      });
+      
       const insertParams = [
         userId, id_client, kop_surat_id, project, nomor_penawaran,
         tanggal_penawaran, judul_penawaran,
-        status_ppn || false, status_diskon_produk || false, diskon_cetak || false,
+        statusPpnValue, statusDiskonProdukValue, diskonCetakValue,
         diskonPercent, diskonSatuPercent, diskonDuaPercent, ppnPercent,
         subtotal, total_diskon, total_diskon_1, total_diskon_2, grand_total,
         JSON.stringify(json_produk || {}), JSON.stringify(processedSyaratKondisi), catatan,
@@ -339,6 +414,8 @@ class PenawaranController {
       
       console.log('Insert params:', insertParams);
       console.log('Insert query:', insertQuery);
+      console.log('🔍 json_produk before JSON.stringify:', json_produk);
+      console.log('🔍 JSON.stringify result:', JSON.stringify(json_produk || {}));
       
       const [result] = await db.execute(insertQuery, insertParams);
       
@@ -355,18 +432,20 @@ class PenawaranController {
     }
   }
 
-  // Update penawaran
+  // Update penawaran (SAMA PERSIS KAYAK WEB)
   async update(req, res) {
     try {
       const { id } = req.params;
       const userId = req.user.id;
       const {
         id_client,
-        id_gudang,
         kop_surat_id,
         project,
         judul_penawaran,
         tanggal_penawaran,
+        status_ppn,
+        status_diskon_produk,
+        diskon_cetak,
         diskon,
         diskon_satu,
         diskon_dua,
@@ -374,8 +453,21 @@ class PenawaranController {
         total,
         json_produk,
         syarat_kondisi,
-        catatan
+        catatan,
+        // Syarat & Ketentuan fields
+        masa_berlaku_minggu,
+        waktu_delivery_hari,
+        pembayaran_tempo_hari,
+        syarat_tempo,
+        tempo_hari,
+        syarat_cbd,
+        syarat_dp,
+        dp_persen,
       } = req.body;
+      
+      // Debug json_produk yang diterima untuk UPDATE
+      console.log('🔍 UPDATE - Received json_produk:', JSON.stringify(json_produk, null, 2));
+      console.log('🔍 UPDATE - Type of json_produk:', typeof json_produk);
       
       // Check if penawaran exists and belongs to user
       const [existing] = await db.execute(
@@ -387,12 +479,45 @@ class PenawaranController {
         return res.status(404).json({ success: false, message: 'Penawaran tidak ditemukan' });
       }
       
-      // Calculate totals
+      // Fetch kop surat untuk nomor rekening
+      const [kopSurat] = await db.execute('SELECT * FROM kop_surat WHERE id = ?', [kop_surat_id]);
+      
+      // Process syarat_kondisi - SAMA KAYAK WEB
+      let processedSyaratKondisi = [];
+      
+      // 1. Masa berlaku penawaran
+      if (masa_berlaku_minggu) {
+        processedSyaratKondisi.push(`Masa berlaku penawaran ${masa_berlaku_minggu} minggu`);
+      }
+      
+      // 2. Waktu delivery
+      if (waktu_delivery_hari) {
+        processedSyaratKondisi.push(`Waktu delivery ${waktu_delivery_hari} hari dari PO diterima`);
+      }
+      
+      // 3. Pembayaran tempo (dengan nomor rekening dari kop surat)
+      if (pembayaran_tempo_hari && kopSurat.length > 0) {
+        const nomorRekening = kopSurat[0].nomor_bank || 'BCA 549 528 7979';
+        const namaPerusahaan = kopSurat[0].title_header || 'PT LAUTAN REJEKI LUAS';
+        processedSyaratKondisi.push(`Pembayaran tempo ${pembayaran_tempo_hari} hari dari invoice ${nomorRekening} a/n. ${namaPerusahaan}`);
+      }
+      
+      // 4. Process syarat dari checkbox/database
+      if (syarat_kondisi && Array.isArray(syarat_kondisi)) {
+        syarat_kondisi.forEach(syarat => {
+          // Skip kalau value nya boolean field names
+          if (typeof syarat === 'string') {
+            processedSyaratKondisi.push(syarat);
+          }
+        });
+      }
+      
+      // 5. Calculate totals dulu untuk DP
       const subtotal = parseFloat(total) || 0;
       const diskonPercent = parseFloat(diskon) || 0;
-      const diskonSatuPercent = parseInt(diskon_satu) || 0;
-      const diskonDuaPercent = parseInt(diskon_dua) || 0;
-      const ppnPercent = parseInt(ppn) || 11;
+      const diskonSatuPercent = parseFloat(diskon_satu) || 0;
+      const diskonDuaPercent = parseFloat(diskon_dua) || 0;
+      const ppnPercent = parseFloat(ppn) || 11;
       
       const total_diskon = subtotal * (diskonPercent / 100);
       const total_diskon_1 = (subtotal - total_diskon) * (diskonSatuPercent / 100);
@@ -402,6 +527,21 @@ class PenawaranController {
       const ppn_nominal = after_diskon * (ppnPercent / 100);
       const grand_total = Math.round(after_diskon + ppn_nominal);
       
+      // 6. Tambah syarat khusus dari boolean flags
+      if (syarat_tempo && tempo_hari) {
+        processedSyaratKondisi.push(`Tempo ${tempo_hari} Hari`);
+      }
+      
+      if (syarat_cbd) {
+        processedSyaratKondisi.push('CBD (Cash Before Delivery)');
+      }
+      
+      if (syarat_dp && dp_persen) {
+        const dpNominal = (grand_total * dp_persen) / 100;
+        const dpFormatted = 'Rp ' + new Intl.NumberFormat('id-ID').format(dpNominal);
+        processedSyaratKondisi.push(`DP ${dp_persen}% Dan sisanya dibayarkan setelah barang dikirim. Total DP ${dpFormatted}`);
+      }
+      
       // Get current time with +7 hours (WIB) for update
       const updateNow = new Date();
       updateNow.setHours(updateNow.getHours() + 7);
@@ -409,21 +549,53 @@ class PenawaranController {
       
       const updateQuery = `
         UPDATE penawaran SET
-          id_client = ?, id_gudang = ?, kop_surat_id = ?, project = ?,
-          judul_penawaran = ?, tanggal_penawaran = ?, diskon = ?, diskon_satu = ?,
-          diskon_dua = ?, ppn = ?, total = ?, total_diskon = ?, total_diskon_1 = ?,
-          total_diskon_2 = ?, grand_total = ?, json_produk = ?, syarat_kondisi = ?,
-          catatan = ?, updated_at = ?
+          id_client = ?, kop_surat_id = ?, project = ?,
+          judul_penawaran = ?, tanggal_penawaran = ?,
+          status_ppn = ?, status_diskon_produk = ?, diskon_cetak = ?,
+          diskon = ?, diskon_satu = ?, diskon_dua = ?, ppn = ?,
+          total = ?, total_diskon = ?, total_diskon_1 = ?, total_diskon_2 = ?, grand_total = ?,
+          json_produk = ?, syarat_kondisi = ?, catatan = ?,
+          updated_at = ?
         WHERE id = ? AND id_user = ?
       `;
       
+      // Debug checkbox values
+      console.log('UPDATE - Checkbox values received:', {
+        status_ppn,
+        status_diskon_produk,
+        diskon_cetak,
+        types: {
+          status_ppn: typeof status_ppn,
+          status_diskon_produk: typeof status_diskon_produk,
+          diskon_cetak: typeof diskon_cetak
+        }
+      });
+      
+      // Convert to TINYINT (1/0) - handle both boolean and truthy values
+      const statusPpnValue = status_ppn === true || status_ppn === 1 || status_ppn === '1' ? 1 : 0;
+      const statusDiskonProdukValue = status_diskon_produk === true || status_diskon_produk === 1 || status_diskon_produk === '1' ? 1 : 0;
+      const diskonCetakValue = diskon_cetak === true || diskon_cetak === 1 || diskon_cetak === '1' ? 1 : 0;
+      
+      console.log('UPDATE - Converted to DB values:', {
+        statusPpnValue,
+        statusDiskonProdukValue,
+        diskonCetakValue
+      });
+      
       const updateParams = [
-        id_client, id_gudang, kop_surat_id, project, judul_penawaran, tanggal_penawaran,
-        diskonPercent, diskonSatuPercent, diskonDuaPercent, ppnPercent, subtotal,
-        total_diskon, total_diskon_1, total_diskon_2, grand_total,
-        JSON.stringify(json_produk || []), JSON.stringify(syarat_kondisi || []), catatan,
-        updateTime, id, userId
+        id_client, kop_surat_id, project,
+        judul_penawaran, tanggal_penawaran,
+        statusPpnValue, statusDiskonProdukValue, diskonCetakValue,
+        diskonPercent, diskonSatuPercent, diskonDuaPercent, ppnPercent,
+        subtotal, total_diskon, total_diskon_1, total_diskon_2, grand_total,
+        JSON.stringify(json_produk || {}), JSON.stringify(processedSyaratKondisi), catatan,
+        updateTime,
+        id, userId
       ];
+      
+      console.log('UPDATE - Update params:', updateParams);
+      console.log('🔍 UPDATE - json_produk before JSON.stringify:', json_produk);
+      console.log('🔍 UPDATE - JSON.stringify result:', JSON.stringify(json_produk || {}));
       
       await db.execute(updateQuery, updateParams);
       
