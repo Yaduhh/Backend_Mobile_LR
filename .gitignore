@@ -43,8 +43,6 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-# Upload directories (optional - uncomment if you don't want to track uploads)
-# upload/
-# upload/dokumentasi/
-# upload/arsip_files/
-# upload/profiles/
+# Upload directories (ignore uploaded assets)
+upload/
+upload/*
