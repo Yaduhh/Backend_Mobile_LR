@@ -15,6 +15,8 @@ const adminEventRoutes = require('./src/routes/adminEventRoutes');
 const penawaranRoutes = require('./src/routes/penawaranRoutes');
 const purchaseOrderRoutes = require('./src/routes/purchaseOrderRoutes');
 const gudangRoutes = require('./src/routes/gudangRoutes');
+const gudangPurchaseOrderRoutes = require('./src/routes/gudangPurchaseOrderRoutes');
+const suratJalanRoutes = require('./src/routes/suratJalanRoutes');
 
 const app = express();
 
@@ -56,6 +58,8 @@ app.use('/api/admin/events', adminEventRoutes);
 app.use('/api/penawaran', penawaranRoutes);
 app.use('/api/purchase-order', purchaseOrderRoutes);
 app.use('/api/gudang', gudangRoutes);
+app.use('/api/gudang/purchase-orders', gudangPurchaseOrderRoutes);
+app.use('/api/surat-jalan', suratJalanRoutes);
 
 // Error handling
 app.use((err, req, res, next) => {

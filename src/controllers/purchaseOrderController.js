@@ -5,8 +5,36 @@ class PurchaseOrderController {
   async index(req, res) {
     try {
       const userId = req.user.id;
+      const userRole = req.user.role;
       const { search, status, gudang, bulan } = req.query;
-      
+      const isSalesContext = userRole !== 1 && userRole !== 3;
+      const isGudangContext = userRole === 3;
+
+      let userGudangIds = [];
+
+      if (isGudangContext) {
+        const [gudangRows] = await db.execute(
+          `SELECT id FROM gudang WHERE penanggung_jawab = ? AND status_deleted = 0`,
+          [userId]
+        );
+        userGudangIds = gudangRows.map((row) => row.id);
+
+        if (userGudangIds.length === 0) {
+          return res.json({
+            success: true,
+            data: [],
+            stats: {
+              total: 0,
+              draft: 0,
+              approved: 0,
+              in_production: 0,
+              completed: 0,
+              cancelled: 0,
+            },
+          });
+        }
+      }
+
       let query = `
         SELECT po.*, 
                p.nomor_penawaran, p.judul_penawaran, p.grand_total,
@@ -21,16 +49,28 @@ class PurchaseOrderController {
         LEFT JOIN users approver ON po.approved_by = approver.id
         LEFT JOIN gudang g ON po.gudang_utama = g.id
         WHERE po.status_deleted = 0
-        AND EXISTS (
-          SELECT 1 FROM penawaran p2 
-          WHERE p2.id = po.id_penawaran 
-          AND p2.id_user = ? 
-          AND p2.status_deleted = 0
-        )
       `;
       
-      const params = [userId];
+      const params = [];
       
+      if (isSalesContext) {
+        query += `
+          AND EXISTS (
+            SELECT 1 FROM penawaran p2 
+            WHERE p2.id = po.id_penawaran 
+            AND p2.id_user = ? 
+            AND p2.status_deleted = 0
+          )
+        `;
+        params.push(userId);
+      }
+
+      if (isGudangContext) {
+        const placeholders = userGudangIds.map(() => '?').join(',');
+        query += ` AND po.gudang_utama IN (${placeholders})`;
+        params.push(...userGudangIds);
+      }
+
       // Search functionality
       if (search) {
         query += ` AND (po.nomor_po LIKE ? OR p.nomor_penawaran LIKE ? OR p.judul_penawaran LIKE ? OR c.nama LIKE ? OR c.nama_perusahaan LIKE ?)`;
@@ -71,15 +111,27 @@ class PurchaseOrderController {
           SUM(CASE WHEN status_po = 'cancelled' THEN 1 ELSE 0 END) as cancelled
         FROM purchase_orders po
         WHERE po.status_deleted = 0
-        AND EXISTS (
-          SELECT 1 FROM penawaran p2 
-          WHERE p2.id = po.id_penawaran 
-          AND p2.id_user = ? 
-          AND p2.status_deleted = 0
-        )
       `;
       
-      const statsParams = [userId];
+      const statsParams = [];
+      
+      if (isSalesContext) {
+        statsQuery += `
+          AND EXISTS (
+            SELECT 1 FROM penawaran p2 
+            WHERE p2.id = po.id_penawaran 
+            AND p2.id_user = ? 
+            AND p2.status_deleted = 0
+          )
+        `;
+        statsParams.push(userId);
+      }
+
+      if (isGudangContext) {
+        const placeholders = userGudangIds.map(() => '?').join(',');
+        statsQuery += ` AND po.gudang_utama IN (${placeholders})`;
+        statsParams.push(...userGudangIds);
+      }
       
       if (search) {
         statsQuery += ` AND EXISTS (
@@ -113,12 +165,12 @@ class PurchaseOrderController {
         success: true,
         data: purchaseOrders,
         stats: {
-          total: stats.total || 0,
-          draft: stats.draft || 0,
-          approved: stats.approved || 0,
-          in_production: stats.in_production || 0,
-          completed: stats.completed || 0,
-          cancelled: stats.cancelled || 0
+          total: stats?.total || 0,
+          draft: stats?.draft || 0,
+          approved: stats?.approved || 0,
+          in_production: stats?.in_production || 0,
+          completed: stats?.completed || 0,
+          cancelled: stats?.cancelled || 0
         }
       });
     } catch (error) {
@@ -256,6 +308,15 @@ class PurchaseOrderController {
       const itemsData = typeof items === 'string' ? JSON.parse(items) : items;
       const files = req.files || [];
 
+      console.log('=== RECEIVED DATA ===');
+      console.log('selected_items (raw):', selected_items);
+      console.log('selected_items (parsed):', selectedItems);
+      console.log('items (raw):', items);
+      console.log('items (parsed):', itemsData);
+      console.log('itemsData type:', typeof itemsData);
+      console.log('itemsData is array?', Array.isArray(itemsData));
+      console.log('itemsData keys:', Object.keys(itemsData || {}));
+      
       console.log('Extracted data:', {
         userId,
         id_penawaran,
@@ -267,10 +328,24 @@ class PurchaseOrderController {
       });
       
       // Validate input
-      if (!id_penawaran || !id_gudang || !selectedItems || !itemsData) {
+      if (!id_penawaran || !id_gudang) {
         return res.status(400).json({
           success: false,
-          message: 'Data yang diperlukan tidak lengkap'
+          message: 'id_penawaran dan id_gudang wajib diisi'
+        });
+      }
+      
+      if (!selectedItems || !Array.isArray(selectedItems) || selectedItems.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Minimal harus memilih 1 item produk'
+        });
+      }
+      
+      if (!itemsData || typeof itemsData !== 'object' || Object.keys(itemsData).length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Data item produk tidak valid'
         });
       }
       
@@ -366,22 +441,71 @@ class PurchaseOrderController {
         
         // Extract produk data from penawaran json_produk
         const produkData = [];
-        if (penawaran.json_produk && typeof penawaran.json_produk === 'object') {
-          Object.entries(penawaran.json_produk).forEach(([kategori, produks]) => {
+        console.log('=== EXTRACTING PRODUK DATA ===');
+        console.log('penawaran.json_produk type:', typeof penawaran.json_produk);
+        
+        let jsonProduk = penawaran.json_produk;
+        
+        // Parse if it's a string
+        if (typeof jsonProduk === 'string') {
+          console.log('json_produk is string, parsing...');
+          try {
+            jsonProduk = JSON.parse(jsonProduk);
+            console.log('Successfully parsed json_produk');
+          } catch (e) {
+            console.error('Failed to parse json_produk:', e.message);
+            jsonProduk = {};
+          }
+        }
+        
+        console.log('jsonProduk after parsing:', JSON.stringify(jsonProduk, null, 2));
+        
+        if (jsonProduk && typeof jsonProduk === 'object') {
+          Object.entries(jsonProduk).forEach(([kategori, produks]) => {
+            console.log(`Processing kategori: ${kategori}, is array: ${Array.isArray(produks)}`);
             if (Array.isArray(produks)) {
-              produks.forEach((item) => {
+              produks.forEach((item, idx) => {
+                console.log(`  Adding item ${idx} from ${kategori}:`, item);
                 produkData.push(item);
               });
             }
           });
         }
+        console.log('Total produkData extracted:', produkData.length);
 
         // Insert PO items
+        console.log('=== STARTING PO ITEMS INSERTION ===');
+        console.log('selectedItems:', selectedItems);
+        console.log('selectedItems length:', selectedItems.length);
+        console.log('produkData length:', produkData.length);
+        
+        let insertedCount = 0;
+        let skippedCount = 0;
+        
         for (const index of selectedItems) {
+          console.log(`\n--- Processing index ${index} ---`);
           const itemData = itemsData[index];
           const produk = produkData[index];
           
-          if (!itemData || !produk) continue;
+          console.log(`itemData:`, itemData);
+          console.log(`produk:`, produk);
+          
+          if (!itemData || !produk) {
+            console.warn(`❌ Skipping item at index ${index}: itemData=${!!itemData}, produk=${!!produk}`);
+            skippedCount++;
+            continue;
+          }
+          
+          const qty = parseInt(itemData.qty) || parseInt(produk.qty) || 1;
+          const harga = parseFloat(itemData.harga) || parseFloat(produk.harga) || 0;
+          const totalHarga = qty * harga;
+          
+          console.log(`✓ Inserting PO item at index ${index}:`, {
+            qty,
+            harga,
+            totalHarga,
+            prioritas: itemData.prioritas || 'medium'
+          });
           
           await connection.execute(`
             INSERT INTO po_items (
@@ -390,14 +514,26 @@ class PurchaseOrderController {
             ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
           `, [
             poId,
-            itemData.id_gudang || id_gudang, // Use per-item gudang if available
-            JSON.stringify(produk), // Store complete produk data as JSON
-            itemData.qty || produk.qty || 1,
-            itemData.harga || produk.harga || 0,
-            (itemData.qty || produk.qty || 1) * (itemData.harga || produk.harga || 0),
+            itemData.id_gudang || id_gudang,
+            JSON.stringify(produk),
+            qty,
+            harga,
+            totalHarga,
             itemData.prioritas || 'medium',
-            currentTime, currentTime
+            currentTime,
+            currentTime
           ]);
+          
+          insertedCount++;
+          console.log(`✓ Successfully inserted PO item at index ${index}`);
+        }
+        
+        console.log(`\n=== PO ITEMS INSERTION SUMMARY ===`);
+        console.log(`Total inserted: ${insertedCount}`);
+        console.log(`Total skipped: ${skippedCount}`);
+        
+        if (insertedCount === 0) {
+          throw new Error('Tidak ada item produk yang berhasil diinsert. Periksa data yang dikirim.');
         }
         
         // Handle file uploads
@@ -508,7 +644,17 @@ class PurchaseOrderController {
         
         // Insert new PO items
         if (selected_items && items && selected_items.length > 0) {
-          const jsonProduk = poData[0].json_produk;
+          let jsonProduk = poData[0].json_produk;
+          
+          // Parse if it's a string
+          if (typeof jsonProduk === 'string') {
+            try {
+              jsonProduk = JSON.parse(jsonProduk);
+            } catch (e) {
+              console.error('Failed to parse json_produk:', e.message);
+              jsonProduk = {};
+            }
+          }
           
           // Extract produk data from penawaran json_produk
           const produkData = [];
@@ -907,7 +1053,17 @@ class PurchaseOrderController {
         
         // Insert new PO items
         if (selected_items && items && selected_items.length > 0) {
-          const jsonProduk = poData[0].json_produk;
+          let jsonProduk = poData[0].json_produk;
+          
+          // Parse if it's a string
+          if (typeof jsonProduk === 'string') {
+            try {
+              jsonProduk = JSON.parse(jsonProduk);
+            } catch (e) {
+              console.error('Failed to parse json_produk:', e.message);
+              jsonProduk = {};
+            }
+          }
           
           for (const index of selected_items) {
             const itemData = items[index];
