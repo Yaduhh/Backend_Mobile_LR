@@ -802,7 +802,7 @@ class GudangPurchaseOrderController {
       if (po.status_po === 'approved') {
         availableActions.push({
           key: 'start_production',
-          label: 'Mulai Produksi'
+          label: 'Mulai Progress & Pengiriman'
         });
         availableActions.push({
           key: 'cancel',

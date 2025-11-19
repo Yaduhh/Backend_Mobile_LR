@@ -589,127 +589,6 @@ class PurchaseOrderController {
     return specs.join(', ');
   }
 
-  // Update purchase order
-  async update(req, res) {
-    try {
-      const { id } = req.params;
-      const userId = req.user.id;
-      const { gudang_nama, prioritas, target_selesai, catatan, selected_items, items } = req.body;
-      
-      // Check if PO exists and belongs to user
-      const [poData] = await db.execute(`
-        SELECT po.*, p.id_user, p.json_produk, c.id as id_client
-        FROM purchase_orders po
-        LEFT JOIN penawaran p ON po.id_penawaran = p.id
-        LEFT JOIN clients c ON p.id_client = c.id
-        WHERE po.id = ? AND p.id_user = ? AND p.status_deleted = 0
-      `, [id, userId]);
-      
-      if (poData.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'Purchase Order tidak ditemukan'
-        });
-      }
-
-      // Only allow update if status is draft
-      if (poData[0].status_po !== 'draft') {
-        return res.status(400).json({
-          success: false,
-          message: 'Hanya dapat mengedit PO dengan status draft'
-        });
-      }
-      
-      // Get connection for transaction
-      const connection = await db.getConnection();
-      
-      try {
-        // Start transaction
-        await connection.beginTransaction();
-        
-        // Get current time with +7 hours (WIB)
-        const now = new Date();
-        now.setHours(now.getHours() + 7);
-        const currentTime = now.toISOString().slice(0, 19).replace('T', ' ');
-        
-        // Update PO basic info
-        await connection.execute(`
-          UPDATE purchase_orders 
-          SET gudang_nama = ?, prioritas = ?, target_selesai = ?, catatan = ?, updated_at = ?
-          WHERE id = ?
-        `, [gudang_nama, prioritas, target_selesai, catatan, currentTime, id]);
-        
-        // Delete existing PO items
-        await connection.execute('DELETE FROM po_items WHERE id_purchase_order = ?', [id]);
-        
-        // Insert new PO items
-        if (selected_items && items && selected_items.length > 0) {
-          let jsonProduk = poData[0].json_produk;
-          
-          // Parse if it's a string
-          if (typeof jsonProduk === 'string') {
-            try {
-              jsonProduk = JSON.parse(jsonProduk);
-            } catch (e) {
-              console.error('Failed to parse json_produk:', e.message);
-              jsonProduk = {};
-            }
-          }
-          
-          // Extract produk data from penawaran json_produk
-          const produkData = [];
-          if (jsonProduk && typeof jsonProduk === 'object') {
-            Object.entries(jsonProduk).forEach(([kategori, produks]) => {
-              if (Array.isArray(produks)) {
-                produks.forEach((item) => {
-                  produkData.push(item);
-                });
-              }
-            });
-          }
-          
-          for (const index of selected_items) {
-            const itemData = items[index];
-            const produk = produkData[index];
-            
-            if (!itemData || !produk) continue;
-            
-            await connection.execute(`
-              INSERT INTO po_items (
-                id_po, id_gudang, produk_data, qty, harga, total_harga,
-                status_produksi, prioritas, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
-            `, [
-              id,
-              itemData.id_gudang || gudang_nama, // Use per-item gudang if available
-              JSON.stringify(produk), // Store complete produk data as JSON
-              itemData.qty || produk.qty || 1,
-              itemData.harga || produk.harga || 0,
-              (itemData.qty || produk.qty || 1) * (itemData.harga || produk.harga || 0),
-              itemData.prioritas || 'medium',
-              currentTime, currentTime
-            ]);
-          }
-        }
-        
-        await connection.commit();
-
-      res.json({
-        success: true,
-          message: 'Purchase Order berhasil diperbarui'
-      });
-    } catch (error) {
-        await connection.rollback();
-        throw error;
-      } finally {
-        connection.release();
-      }
-    } catch (error) {
-      console.error('Error in purchase order update:', error);
-      res.status(500).json({ success: false, message: 'Internal server error' });
-    }
-  }
-
   // Delete purchase order
   async destroy(req, res) {
     try {
@@ -1007,99 +886,322 @@ class PurchaseOrderController {
     }
   }
 
-  // Update purchase order
+  // Update purchase order (dipakai Mobile EditPurchaseOrderScreen)
   async update(req, res) {
     try {
       const { id } = req.params;
       const userId = req.user.id;
-      const { gudang_nama, prioritas, target_selesai, catatan, selected_items, items } = req.body;
-      
-      // Check if PO exists and belongs to user
+      const {
+        gudang_utama: bodyGudangUtama,
+        id_gudang: bodyIdGudang,
+        prioritas,
+        target_selesai,
+        catatan,
+        items: rawItems,
+        selected_items: rawSelectedItems,
+      } = req.body;
+
+      console.log('=== PURCHASE ORDER UPDATE START ===');
+      console.log('Body:', req.body);
+
+      // Normalisasi gudang_utama (support payload lama: id_gudang)
+      const gudang_utama = bodyGudangUtama || bodyIdGudang;
+
+      // Check if PO exists dan memang milik sales ini
       const [poData] = await db.execute(`
         SELECT po.*, p.id_user, p.json_produk
         FROM purchase_orders po
         LEFT JOIN penawaran p ON po.id_penawaran = p.id
         WHERE po.id = ? AND p.id_user = ? AND p.status_deleted = 0
       `, [id, userId]);
-      
+
       if (poData.length === 0) {
         return res.status(404).json({
           success: false,
           message: 'Purchase Order tidak ditemukan'
         });
       }
+      const po = poData[0];
 
-      // Only allow update if status is draft
-      if (poData[0].status_po !== 'draft') {
+      // Hanya boleh edit draft
+      if (po.status_po !== 'draft') {
         return res.status(400).json({
           success: false,
           message: 'Hanya dapat mengedit PO dengan status draft'
         });
       }
-      
-      // Start transaction
-      await db.execute('START TRANSACTION');
-      
-      try {
-        // Update PO basic info
-        await db.execute(`
-          UPDATE purchase_orders 
-          SET gudang_nama = ?, prioritas = ?, target_selesai = ?, catatan = ?, updated_at = ?
-          WHERE id = ?
-        `, [gudang_nama, prioritas, target_selesai, catatan, new Date(), id]);
-        
-        // Delete existing PO items
-        await db.execute('DELETE FROM po_items WHERE id_purchase_order = ?', [id]);
-        
-        // Insert new PO items
-        if (selected_items && items && selected_items.length > 0) {
-          let jsonProduk = poData[0].json_produk;
-          
-          // Parse if it's a string
-          if (typeof jsonProduk === 'string') {
-            try {
-              jsonProduk = JSON.parse(jsonProduk);
-            } catch (e) {
-              console.error('Failed to parse json_produk:', e.message);
-              jsonProduk = {};
-            }
+
+      // Normalisasi items:
+      // - bisa datang sebagai array (baru)
+      // - atau object index-based + selected_items (lama)
+      let itemsArray = null;
+
+      // Jika rawItems string (kirim via form-data), parse dulu
+      let parsedRawItems = rawItems;
+      if (typeof parsedRawItems === 'string') {
+        try {
+          parsedRawItems = JSON.parse(parsedRawItems);
+        } catch (e) {
+          console.error('Gagal parse items string:', e.message);
+        }
+      }
+
+      if (Array.isArray(parsedRawItems)) {
+        itemsArray = parsedRawItems;
+      } else if (parsedRawItems && typeof parsedRawItems === 'object') {
+        // Bentuk { "0": {...}, "1": {...} }
+        const sortedKeys = Object.keys(parsedRawItems).sort((a, b) => parseInt(a) - parseInt(b));
+        itemsArray = sortedKeys.map((k) => parsedRawItems[k]);
+      } else {
+        itemsArray = [];
+      }
+
+      // Normalisasi selected_items (bisa string / array / undefined)
+      let selectedItemsIdx = [];
+      if (rawSelectedItems) {
+        if (typeof rawSelectedItems === 'string') {
+          try {
+            selectedItemsIdx = JSON.parse(rawSelectedItems);
+          } catch (e) {
+            console.error('Gagal parse selected_items string:', e.message);
           }
-          
-          for (const index of selected_items) {
-            const itemData = items[index];
-            const produkData = this.findProdukByIndex(jsonProduk, parseInt(index));
-            
-            if (produkData) {
-              await db.execute(`
-                INSERT INTO po_items (
-                  id_purchase_order, nama_produk, spesifikasi_lengkap, 
-                  qty, harga, total_harga, prioritas, status_produksi, 
-                  created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-              `, [
-                id,
-                produkData.item || 'Produk',
-                this.buildSpesifikasi(produkData),
-                itemData.qty || produkData.qty || 1,
-                itemData.harga || produkData.harga || 0,
-                (itemData.qty || produkData.qty || 1) * (itemData.harga || produkData.harga || 0),
-                itemData.prioritas || 'medium',
-                new Date(),
-                new Date()
-              ]);
-            }
+        } else if (Array.isArray(rawSelectedItems)) {
+          selectedItemsIdx = rawSelectedItems;
+        }
+      }
+
+      // Validasi minimal 1 item setelah normalisasi
+      if (!itemsArray || itemsArray.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Minimal harus ada 1 item di dalam items'
+        });
+      }
+
+      // Ambil daftar po_items existing buat mapping index -> id (untuk payload lama tanpa id)
+      const [existingItems] = await db.execute(
+        `
+          SELECT * FROM po_items
+          WHERE id_po = ? AND status_deleted = 0
+          ORDER BY created_at ASC
+        `,
+        [id]
+      );
+
+      // Flatten json_produk penawaran untuk kebutuhan insert item baru (kalau user centang produk yang sebelumnya tidak ada di PO)
+      let produkDataFlat = [];
+      if (po.json_produk) {
+        let jsonProdukUpdate = po.json_produk;
+        if (typeof jsonProdukUpdate === 'string') {
+          try {
+            jsonProdukUpdate = JSON.parse(jsonProdukUpdate);
+          } catch (e) {
+            console.error('Gagal parse json_produk di update:', e.message);
+            jsonProdukUpdate = null;
           }
         }
-        
-        await db.execute('COMMIT');
 
-      res.json({
-        success: true,
+        if (jsonProdukUpdate && typeof jsonProdukUpdate === 'object') {
+          Object.entries(jsonProdukUpdate).forEach(([kategori, produks]) => {
+            if (Array.isArray(produks)) {
+              produks.forEach((item) => {
+                produkDataFlat.push(item);
+              });
+            }
+          });
+        }
+      }
+
+      // Build finalItems: pastikan setiap item punya "id" po_items untuk di-update
+      const finalItems = [];
+      const newItems = []; // item baru yang belum punya po_items (id null)
+
+      const indexesToUse =
+        selectedItemsIdx && selectedItemsIdx.length > 0
+          ? selectedItemsIdx.map((i) => parseInt(i))
+          : itemsArray.map((_, idx) => idx);
+
+      for (const idx of indexesToUse) {
+        const payloadItem = itemsArray[idx];
+        if (!payloadItem) continue;
+
+        let itemId = payloadItem.id;
+
+        // Coba mapping berdasarkan urutan existingItems kalau id tidak dikirim
+        if (!itemId && existingItems[idx]) {
+          itemId = existingItems[idx].id;
+        }
+
+        if (itemId) {
+          finalItems.push({
+            id: itemId,
+            id_gudang: payloadItem.id_gudang || gudang_utama || po.gudang_utama,
+            qty: payloadItem.qty,
+            harga: payloadItem.harga,
+            assigned_to: payloadItem.assigned_to || null,
+          });
+        } else {
+          // Tidak ada id dan tidak ada existing item di index ini → ini produk baru yang baru dicentang
+          newItems.push({
+            index: idx,
+            payload: payloadItem,
+          });
+        }
+      }
+
+      if (finalItems.length === 0 && newItems.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Tidak ada item yang valid untuk diupdate'
+        });
+      }
+
+      const connection = await db.getConnection();
+
+      try {
+        await connection.beginTransaction();
+
+        // Waktu WIB
+        const now = new Date();
+        now.setHours(now.getHours() + 7);
+        const currentTime = now.toISOString().slice(0, 19).replace('T', ' ');
+
+        // Basic validation gudang_utama setelah normalisasi (di dalam transaksi biar konsisten)
+        if (!gudang_utama && !po.gudang_utama) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: 'gudang_utama / id_gudang wajib diisi'
+          });
+        }
+
+        // Update header PO
+        await connection.execute(`
+          UPDATE purchase_orders 
+          SET gudang_utama = ?, prioritas = ?, target_selesai = ?, catatan = ?, updated_at = ?
+          WHERE id = ?
+        `, [
+          parseInt(gudang_utama || po.gudang_utama, 10),
+          prioritas || po.prioritas || 'medium',
+          target_selesai || null,
+          catatan || null,
+          currentTime,
+          id
+        ]);
+
+        // Soft delete item yang sudah tidak dipilih lagi (uncentang di mobile)
+        const idsToKeep = finalItems.map((it) => it.id);
+        if (existingItems.length > 0) {
+          if (idsToKeep.length > 0) {
+            const placeholders = idsToKeep.map(() => '?').join(',');
+            await connection.execute(
+              `
+                UPDATE po_items
+                SET status_deleted = 1, updated_at = ?
+                WHERE id_po = ? AND status_deleted = 0 AND id NOT IN (${placeholders})
+              `,
+              [currentTime, id, ...idsToKeep]
+            );
+          } else {
+            // Semua existing items di-uncentang → soft delete semua
+            await connection.execute(
+              `
+                UPDATE po_items
+                SET status_deleted = 1, updated_at = ?
+                WHERE id_po = ? AND status_deleted = 0
+              `,
+              [currentTime, id]
+            );
+          }
+        }
+
+        // Update tiap item berdasarkan id po_items finalItems
+        for (const item of finalItems) {
+          if (!item.id) {
+            console.warn('Skip item tanpa id:', item);
+            continue;
+          }
+
+          const qty = parseInt(item.qty, 10) || 0;
+          const harga = parseFloat(item.harga) || 0;
+          const totalHarga = qty * harga;
+
+          await connection.execute(`
+            UPDATE po_items
+            SET id_gudang = ?, qty = ?, harga = ?, total_harga = ?, assigned_to = ?, updated_at = ?
+            WHERE id = ? AND status_deleted = 0
+          `, [
+            parseInt(item.id_gudang, 10),
+            qty,
+            harga,
+            totalHarga,
+            item.assigned_to || null,
+            currentTime,
+            item.id
+          ]);
+        }
+
+        // Insert item baru (produk dari penawaran yang baru dicentang di edit)
+        if (newItems.length > 0 && produkDataFlat.length > 0) {
+          for (const newItem of newItems) {
+            const idx = newItem.index;
+            const payloadItem = newItem.payload;
+            const produkSrc = produkDataFlat[idx];
+
+            if (!produkSrc) {
+              console.warn('Skip insert item baru, tidak ketemu produkSrc untuk index:', idx);
+              continue;
+            }
+
+            const qty = parseInt(payloadItem.qty, 10) || parseInt(produkSrc.qty, 10) || 1;
+            const harga = parseFloat(payloadItem.harga) || parseFloat(produkSrc.harga) || 0;
+            const totalHarga = qty * harga;
+
+            await connection.execute(
+              `
+                INSERT INTO po_items (
+                  id_po,
+                  id_gudang,
+                  produk_data,
+                  qty,
+                  harga,
+                  total_harga,
+                  status_produksi,
+                  prioritas,
+                  assigned_to,
+                  status_deleted,
+                  created_at,
+                  updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0, ?, ?)
+              `,
+              [
+                id,
+                parseInt(payloadItem.id_gudang || gudang_utama || po.gudang_utama, 10),
+                JSON.stringify(produkSrc),
+                qty,
+                harga,
+                totalHarga,
+                payloadItem.prioritas || 'medium',
+                payloadItem.assigned_to || null,
+                currentTime,
+                currentTime,
+              ]
+            );
+          }
+        }
+
+        await connection.commit();
+
+        res.json({
+          success: true,
           message: 'Purchase Order berhasil diperbarui'
-      });
-    } catch (error) {
-        await db.execute('ROLLBACK');
+        });
+      } catch (error) {
+        await connection.rollback();
+        console.error('Transaction error in purchase order update:', error);
         throw error;
+      } finally {
+        connection.release();
       }
     } catch (error) {
       console.error('Error in purchase order update:', error);
