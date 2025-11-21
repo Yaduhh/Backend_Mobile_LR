@@ -101,6 +101,9 @@ router.post('/:id/surat-jalan', (req, res) =>
   gudangPurchaseOrderController.createSuratJalan(req, res)
 );
 
+router.get('/surat-jalan', (req, res) =>
+  gudangPurchaseOrderController.getSuratJalanList(req, res)
+);
 router.get('/surat-jalan/:id', (req, res) =>
   gudangPurchaseOrderController.getSuratJalanDetail(req, res)
 );

@@ -2091,6 +2091,55 @@ class GudangPurchaseOrderController {
       handleControllerError(res, error, 'Gagal mengupload dokumentasi.');
     }
   }
+  }
+
+  async getSuratJalanList(req, res) {
+    try {
+      const { search, status } = req.query;
+      
+      let query = `
+        SELECT 
+          sj.*, 
+          po.nomor_po, po.id as po_id, po.gudang_utama,
+          pen.nomor_penawaran, pen.judul_penawaran,
+          c.nama as client_nama, c.nama_perusahaan as client_perusahaan,
+          g.nama as gudang_nama
+        FROM surat_jalan sj
+        LEFT JOIN purchase_orders po ON sj.purchase_order_id = po.id
+        LEFT JOIN penawaran pen ON po.id_penawaran = pen.id
+        LEFT JOIN clients c ON pen.id_client = c.id
+        LEFT JOIN gudang g ON po.gudang_utama = g.id
+        WHERE sj.deleted_status = 0
+      `;
+      
+      const params = [];
+      
+      // Search functionality
+      if (search) {
+        query += ` AND (sj.nomor_surat LIKE ? OR po.nomor_po LIKE ? OR pen.judul_penawaran LIKE ? OR c.nama LIKE ?)`;
+        const searchParam = `%${search}%`;
+        params.push(searchParam, searchParam, searchParam, searchParam);
+      }
+      
+      // Filter by status
+      if (status !== undefined && status !== '') {
+        query += ` AND sj.status = ?`;
+        params.push(status);
+      }
+      
+      query += ` ORDER BY sj.created_at DESC LIMIT 100`;
+      
+      const [suratJalanData] = await db.execute(query, params);
+      
+      res.json({
+        success: true,
+        data: suratJalanData || []
+      });
+    } catch (error) {
+      console.error('Error in gudang surat jalan list:', error);
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
 }
 
 module.exports = new GudangPurchaseOrderController();
