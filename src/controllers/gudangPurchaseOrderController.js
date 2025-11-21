@@ -1888,12 +1888,20 @@ class GudangPurchaseOrderController {
             po.nomor_po,
             pen.nomor_penawaran,
             pen.judul_penawaran,
-            c.nama AS client_nama
+            c.nama AS client_nama,
+            k.id AS kop_surat_id,
+            k.title_header AS kop_surat_title_header,
+            k.alamat AS kop_surat_alamat,
+            k.notelp AS kop_surat_notelp,
+            k.fax AS kop_surat_fax,
+            k.email AS kop_surat_email,
+            k.logo AS kop_surat_logo
           FROM surat_jalan sj
           LEFT JOIN users u ON sj.author = u.id
           LEFT JOIN purchase_orders po ON sj.purchase_order_id = po.id
           LEFT JOIN penawaran pen ON po.id_penawaran = pen.id
           LEFT JOIN clients c ON pen.id_client = c.id
+          LEFT JOIN kop_surat k ON pen.kop_surat_id = k.id
           WHERE sj.id = ? AND sj.deleted_status = 0
         `,
         [id]
@@ -1937,6 +1945,28 @@ class GudangPurchaseOrderController {
         0
       );
 
+      // Build kop_surat object (SAMA KAYAK PENAWARAN)
+      const kopSurat = suratJalan.kop_surat_id ? {
+        id: suratJalan.kop_surat_id,
+        title_header: suratJalan.kop_surat_title_header || '',
+        alamat: suratJalan.kop_surat_alamat || '',
+        notelp: suratJalan.kop_surat_notelp || '',
+        fax: suratJalan.kop_surat_fax || '',
+        email: suratJalan.kop_surat_email || '',
+        logo: suratJalan.kop_surat_logo || null,
+      } : {};
+
+      // Build penawaran object with kop_surat (SAMA KAYAK ENDPOINT SALES)
+      const penawaranData = {
+        nomor_penawaran: suratJalan.nomor_penawaran,
+        judul_penawaran: suratJalan.judul_penawaran,
+        kop_surat: kopSurat,
+        client: {
+          nama: suratJalan.client_nama || '',
+          nama_perusahaan: suratJalan.client_nama || ''
+        }
+      };
+
       res.json({
         success: true,
         data: {
@@ -1963,6 +1993,7 @@ class GudangPurchaseOrderController {
             judul_penawaran: suratJalan.judul_penawaran,
             client: suratJalan.client_nama
           },
+          penawaran: penawaranData, // Add penawaran with kop_surat (SAMA KAYAK ENDPOINT SALES)
           summary: {
             total_items: items.length,
             total_qty_kirim: totalQtyKirim
