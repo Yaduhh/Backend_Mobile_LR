@@ -70,12 +70,40 @@ const dokumentasiUploadMiddleware = (req, res, next) => {
   });
 };
 
+// Test route tanpa auth untuk debugging
+router.get('/test-surat-jalan', (req, res) => {
+  console.log('[Route] GET /api/gudang/purchase-orders/test-surat-jalan called');
+  res.json({ success: true, message: 'Test route works!' });
+});
+
 router.use(auth);
 
 // Route surat-jalan harus diletakkan PALING ATAS sebelum route lain agar tidak ter-match sebagai parameter
-router.get('/surat-jalan', (req, res) => {
-  console.log('[Route] GET /api/gudang/purchase-orders/surat-jalan called');
-  gudangPurchaseOrderController.getSuratJalanList(req, res);
+router.get('/surat-jalan', async (req, res) => {
+  try {
+    console.log('[Route] GET /api/gudang/purchase-orders/surat-jalan called');
+    console.log('[Route] Request method:', req.method);
+    console.log('[Route] Request path:', req.path);
+    console.log('[Route] Request originalUrl:', req.originalUrl);
+    console.log('[Route] Request query:', req.query);
+    console.log('[Route] User from auth:', req.user?.id);
+    
+    if (!gudangPurchaseOrderController.getSuratJalanList) {
+      console.error('[Route] ERROR: getSuratJalanList method not found in controller!');
+      return res.status(500).json({
+        success: false,
+        message: 'Controller method not found'
+      });
+    }
+    
+    await gudangPurchaseOrderController.getSuratJalanList(req, res);
+  } catch (error) {
+    console.error('[Route] Error in surat-jalan route:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Internal server error'
+    });
+  }
 });
 router.get('/surat-jalan/:id', (req, res) => {
   console.log('[Route] GET /api/gudang/purchase-orders/surat-jalan/:id called', req.params.id);
