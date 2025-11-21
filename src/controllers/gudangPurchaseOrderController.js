@@ -1992,9 +1992,10 @@ class GudangPurchaseOrderController {
             nomor_po: suratJalan.nomor_po,
             nomor_penawaran: suratJalan.nomor_penawaran,
             judul_penawaran: suratJalan.judul_penawaran,
-            client: suratJalan.client_nama
+            client: suratJalan.client_nama,
+            penawaran: penawaranData // Add penawaran with kop_surat di dalam purchase_order (SAMA KAYAK STRUKTUR RELASI)
           },
-          penawaran: penawaranData, // Add penawaran with kop_surat (SAMA KAYAK ENDPOINT SALES)
+          penawaran: penawaranData, // Add penawaran with kop_surat di root juga (SAMA KAYAK ENDPOINT SALES)
           summary: {
             total_items: items.length,
             total_qty_kirim: totalQtyKirim
