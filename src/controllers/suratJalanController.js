@@ -75,13 +75,17 @@ class SuratJalanController {
                p.nomor_penawaran, p.judul_penawaran, p.grand_total,
                c.nama as client_nama, c.nama_perusahaan as client_perusahaan,
                g.nama as gudang_nama,
-               u.name as creator_name
+               u.name as creator_name,
+               k.title_header as kop_surat_title, k.alamat as kop_surat_alamat,
+               k.notelp as kop_surat_notelp, k.fax as kop_surat_fax,
+               k.email as kop_surat_email, k.logo as kop_surat_logo
         FROM surat_jalan sj
         LEFT JOIN purchase_orders po ON sj.purchase_order_id = po.id
         LEFT JOIN penawaran p ON po.id_penawaran = p.id
         LEFT JOIN clients c ON p.id_client = c.id
         LEFT JOIN gudang g ON po.gudang_utama = g.id
         LEFT JOIN users u ON po.created_by = u.id
+        LEFT JOIN kop_surat k ON p.kop_surat_id = k.id
         WHERE sj.id = ? AND sj.deleted_status = 0
         AND EXISTS (
           SELECT 1 FROM penawaran p2 
@@ -138,20 +142,48 @@ class SuratJalanController {
         }
       }
       
+      // Construct kop_surat object
+      const kopSurat = {
+        title_header: suratJalan.kop_surat_title,
+        alamat: suratJalan.kop_surat_alamat,
+        notelp: suratJalan.kop_surat_notelp,
+        fax: suratJalan.kop_surat_fax,
+        email: suratJalan.kop_surat_email,
+        logo: suratJalan.kop_surat_logo
+      };
+
       console.log('Surat Jalan Detail:', {
         id: suratJalan.id,
         nomor_surat: suratJalan.nomor_surat,
         bukti_dokumentasi_raw: suratJalan.bukti_dokumentasi,
         bukti_dokumentasi_parsed: buktiDokumentasi,
-        bukti_dokumentasi_length: buktiDokumentasi.length
+        bukti_dokumentasi_length: buktiDokumentasi.length,
+        hasKopSurat: !!kopSurat.title_header
       });
       
-      // Build response
+      // Build response with nested penawaran structure for frontend compatibility
       const response = {
         ...suratJalan,
         items: items,
-        bukti_dokumentasi: buktiDokumentasi
+        bukti_dokumentasi: buktiDokumentasi,
+        penawaran: {
+          nomor_penawaran: suratJalan.nomor_penawaran,
+          judul_penawaran: suratJalan.judul_penawaran,
+          kop_surat: kopSurat,
+          client: {
+            nama: suratJalan.client_nama,
+            nama_perusahaan: suratJalan.client_perusahaan
+          }
+        }
       };
+      
+      // Remove flattened fields to keep response clean (optional)
+      delete response.kop_surat_title;
+      delete response.kop_surat_alamat;
+      delete response.kop_surat_notelp;
+      delete response.kop_surat_fax;
+      delete response.kop_surat_email;
+      delete response.kop_surat_logo;
       
       res.json({
         success: true,
