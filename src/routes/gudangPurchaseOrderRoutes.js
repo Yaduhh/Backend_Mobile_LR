@@ -97,21 +97,21 @@ router.post('/:id/reactivate', (req, res) =>
 router.post('/:id/close', (req, res) =>
   gudangPurchaseOrderController.close(req, res)
 );
-router.post('/:id/surat-jalan', (req, res) =>
-  gudangPurchaseOrderController.createSuratJalan(req, res)
-);
-
+// Route surat-jalan harus diletakkan SEBELUM route /:id agar tidak ter-match sebagai parameter
 router.get('/surat-jalan', (req, res) =>
   gudangPurchaseOrderController.getSuratJalanList(req, res)
 );
 router.get('/surat-jalan/:id', (req, res) =>
   gudangPurchaseOrderController.getSuratJalanDetail(req, res)
 );
-
 router.post(
   '/surat-jalan/:id/upload-dokumentasi',
   dokumentasiUploadMiddleware,
   (req, res) => gudangPurchaseOrderController.uploadSuratJalanDokumentasi(req, res)
+);
+
+router.post('/:id/surat-jalan', (req, res) =>
+  gudangPurchaseOrderController.createSuratJalan(req, res)
 );
 
 router.get('/:id', (req, res) =>
