@@ -72,6 +72,21 @@ const dokumentasiUploadMiddleware = (req, res, next) => {
 
 router.use(auth);
 
+// Route surat-jalan harus diletakkan PALING ATAS sebelum route lain agar tidak ter-match sebagai parameter
+router.get('/surat-jalan', (req, res) => {
+  console.log('[Route] GET /api/gudang/purchase-orders/surat-jalan called');
+  gudangPurchaseOrderController.getSuratJalanList(req, res);
+});
+router.get('/surat-jalan/:id', (req, res) => {
+  console.log('[Route] GET /api/gudang/purchase-orders/surat-jalan/:id called', req.params.id);
+  gudangPurchaseOrderController.getSuratJalanDetail(req, res);
+});
+router.post(
+  '/surat-jalan/:id/upload-dokumentasi',
+  dokumentasiUploadMiddleware,
+  (req, res) => gudangPurchaseOrderController.uploadSuratJalanDokumentasi(req, res)
+);
+
 router.post('/items/:itemId/progress', (req, res) =>
   gudangPurchaseOrderController.updateItemProgress(req, res)
 );
@@ -97,19 +112,6 @@ router.post('/:id/reactivate', (req, res) =>
 router.post('/:id/close', (req, res) =>
   gudangPurchaseOrderController.close(req, res)
 );
-// Route surat-jalan harus diletakkan SEBELUM route /:id agar tidak ter-match sebagai parameter
-router.get('/surat-jalan', (req, res) =>
-  gudangPurchaseOrderController.getSuratJalanList(req, res)
-);
-router.get('/surat-jalan/:id', (req, res) =>
-  gudangPurchaseOrderController.getSuratJalanDetail(req, res)
-);
-router.post(
-  '/surat-jalan/:id/upload-dokumentasi',
-  dokumentasiUploadMiddleware,
-  (req, res) => gudangPurchaseOrderController.uploadSuratJalanDokumentasi(req, res)
-);
-
 router.post('/:id/surat-jalan', (req, res) =>
   gudangPurchaseOrderController.createSuratJalan(req, res)
 );

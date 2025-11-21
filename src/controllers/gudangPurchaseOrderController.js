@@ -2094,6 +2094,8 @@ class GudangPurchaseOrderController {
 
   async getSuratJalanList(req, res) {
     try {
+      console.log('[Controller] getSuratJalanList called');
+      console.log('[Controller] Query params:', req.query);
       const { search, status } = req.query;
       
       let query = `
