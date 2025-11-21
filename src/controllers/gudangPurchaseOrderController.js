@@ -2091,7 +2091,6 @@ class GudangPurchaseOrderController {
       handleControllerError(res, error, 'Gagal mengupload dokumentasi.');
     }
   }
-  }
 
   async getSuratJalanList(req, res) {
     try {
