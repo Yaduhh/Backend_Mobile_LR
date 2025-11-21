@@ -1890,7 +1890,7 @@ class GudangPurchaseOrderController {
             pen.judul_penawaran,
             c.nama AS client_nama,
             k.id AS kop_surat_id,
-            k.title_header AS kop_surat_title_header,
+            k.title_header AS kop_surat_title,
             k.alamat AS kop_surat_alamat,
             k.notelp AS kop_surat_notelp,
             k.fax AS kop_surat_fax,
@@ -1945,17 +1945,15 @@ class GudangPurchaseOrderController {
         0
       );
 
-      // Build kop_surat object (SAMA KAYAK PENAWARAN)
-      // Build dari flattened fields, hanya build jika ada data (title_header atau logo)
-      const kopSurat = (suratJalan.kop_surat_title_header || suratJalan.kop_surat_logo) ? {
-        id: suratJalan.kop_surat_id || null,
-        title_header: suratJalan.kop_surat_title_header || '',
+      // Build kop_surat object (SAMA KAYAK PENAWARAN - copy exact dari penawaranController.js line 149-156)
+      const kopSurat = {
+        title_header: suratJalan.kop_surat_title || '',
         alamat: suratJalan.kop_surat_alamat || '',
         notelp: suratJalan.kop_surat_notelp || '',
         fax: suratJalan.kop_surat_fax || '',
         email: suratJalan.kop_surat_email || '',
         logo: suratJalan.kop_surat_logo || null,
-      } : {};
+      };
 
       // Build penawaran object with kop_surat (SAMA KAYAK ENDPOINT SALES)
       const penawaranData = {
