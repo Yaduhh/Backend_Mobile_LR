@@ -1946,15 +1946,16 @@ class GudangPurchaseOrderController {
       );
 
       // Build kop_surat object (SAMA KAYAK PENAWARAN)
-      const kopSurat = suratJalan.kop_surat_id ? {
-        id: suratJalan.kop_surat_id,
+      // Build dari flattened fields, tidak perlu cek kop_surat_id karena bisa null
+      const kopSurat = {
+        id: suratJalan.kop_surat_id || null,
         title_header: suratJalan.kop_surat_title_header || '',
         alamat: suratJalan.kop_surat_alamat || '',
         notelp: suratJalan.kop_surat_notelp || '',
         fax: suratJalan.kop_surat_fax || '',
         email: suratJalan.kop_surat_email || '',
         logo: suratJalan.kop_surat_logo || null,
-      } : {};
+      };
 
       // Build penawaran object with kop_surat (SAMA KAYAK ENDPOINT SALES)
       const penawaranData = {
